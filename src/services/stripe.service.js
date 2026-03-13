@@ -1,17 +1,32 @@
+import Stripe from 'stripe';
 import prisma from '../lib/prisma.js';
 
+// Initialize Stripe using your live/test secret key from Render environment variables
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
 const createEscrowPaymentIntent = async ({ projectId, amount, employerEmail }) => {
-  // Simulated - no real Stripe needed
-  const fakePaymentIntentId = `pi_simulated_${Date.now()}`;
-  const fakeClientSecret = `${fakePaymentIntentId}_secret_simulated`;
-  return {
-    clientSecret: fakeClientSecret,
-    paymentIntentId: fakePaymentIntentId,
-  };
+  try {
+    // Stripe requires the amount to be in the smallest currency unit (paise for INR, cents for USD)
+    const amountInSmallestUnit = Math.round(amount * 100);
+
+    // Call the REAL Stripe API
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: amountInSmallestUnit,
+      currency: 'inr', // Change to 'usd' if your Stripe account is US-based
+      metadata: { projectId }
+    });
+
+    return {
+      clientSecret: paymentIntent.client_secret, // Returns real 'pi_3M..._secret_...'
+      paymentIntentId: paymentIntent.id,
+    };
+  } catch (error) {
+    console.error("Stripe API Error:", error);
+    throw new Error("Failed to generate secure Stripe payment intent.");
+  }
 };
 
 const confirmEscrowFunded = async ({ projectId, paymentIntentId }) => {
-  // Simulate payment always succeeds
   const updatedEscrow = await prisma.$transaction(async (tx) => {
     const project = await tx.project.findUnique({ where: { id: projectId } });
 
@@ -44,7 +59,7 @@ const confirmEscrowFunded = async ({ projectId, paymentIntentId }) => {
 };
 
 const releaseMilestonePayout = async ({ escrowAccountId, milestoneId, freelancerId, amount, description, type = 'MILESTONE_PAYOUT' }) => {
-  console.log(`Simulating payout: $${amount} to freelancer ${freelancerId} for milestone ${milestoneId}`);
+  console.log(`Processing payout: ₹${amount} to freelancer ${freelancerId} for milestone ${milestoneId}`);
   const transaction = await prisma.$transaction(async (tx) => {
     const escrow = await tx.escrowAccount.findUnique({ where: { id: escrowAccountId } });
     if (escrow.heldAmount < amount) throw new Error("Insufficient funds in escrow.");
@@ -81,7 +96,7 @@ const releasePartialPayout = async ({ escrowAccountId, milestoneId, freelancerId
 };
 
 const triggerRefund = async ({ escrowAccountId, milestoneId, amount, reason }) => {
-  console.log(`Simulating refund: $${amount} for milestone ${milestoneId}`);
+  console.log(`Processing refund: ₹${amount} for milestone ${milestoneId}`);
   const transaction = await prisma.$transaction(async (tx) => {
     const escrow = await tx.escrowAccount.findUnique({ where: { id: escrowAccountId } });
     if (escrow.heldAmount < amount) throw new Error("Insufficient funds in escrow for refund.");

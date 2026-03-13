@@ -7,7 +7,7 @@
 //   description: z.string().min(20),
 //   budget: z.number().positive(),
 //   deadline: z.string().datetime(),
-//   freelancerEmail: z.string().email().optional(),
+//   freelancerEmail: z.string().email().optional(),.
 // });
 
 // const createProject = async (req, res) => {
