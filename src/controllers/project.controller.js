@@ -324,8 +324,45 @@ const getUserProjects = async (req, res) => {
   }
 };
 
+const updateDeadline = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newDeadline } = req.body;
+
+    if (!newDeadline) {
+      return res.status(400).json({ error: 'newDeadline is required' });
+    }
+
+    const project = await prisma.project.findUnique({
+      where: { id },
+    });
+
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    // Optional: Check if the user is the employer of the project
+    if (project.employerId !== req.user.userId) {
+      return res.status(403).json({ error: 'You are not authorized to update this project' });
+    }
+
+    const updatedProject = await prisma.project.update({
+      where: { id },
+      data: {
+        deadline: new Date(newDeadline),
+      },
+    });
+
+    res.json(updatedProject);
+  } catch (error) {
+    console.error('Failed to update deadline:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
 export default {
   createProject,
   getProjectById,
   getUserProjects,
+  updateDeadline,
 };

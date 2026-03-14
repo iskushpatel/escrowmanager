@@ -7,5 +7,6 @@ const router = Router();
 router.post('/', authenticateToken, projectController.createProject);
 router.get('/:id', authenticateToken, projectController.getProjectById);
 router.get('/', authenticateToken, projectController.getUserProjects);
+router.put('/:id/deadline', authenticateToken, projectController.updateDeadline);
 
 export default router;
