@@ -6,7 +6,7 @@ import Groq from 'groq-sdk';
 import prisma from '../lib/prisma.js';
 import stripeService from './stripe.service.js';
 import pfiService from './pfi.service.js';
-import geminiService from './gemini.service.js'; // fallback
+import geminiService from './milestone.service.js'; // fallback
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 

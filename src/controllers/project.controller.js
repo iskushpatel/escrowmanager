@@ -162,7 +162,7 @@
 // };
 import { z } from 'zod';
 import prisma from '../lib/prisma.js';
-import geminiService from '../services/gemini.service.js';
+import milestoneService from '../services/milestone.service.js';
 
 const createProjectSchema = z.object({
   title: z.string().min(5),
@@ -187,7 +187,10 @@ const createProject = async (req, res) => {
       budget: projectData.budget,
       deadline: projectData.deadline,
     });
-
+   const total = milestonesFromAI.reduce((s, m) => s + m.amount, 0);
+if (total !== projectData.budget) {
+  milestonesFromAI[milestonesFromAI.length - 1].amount += projectData.budget - total;
+}
     // FIX 2: Look up freelancer
     let freelancerId = null;
     if (projectData.freelancerEmail) {

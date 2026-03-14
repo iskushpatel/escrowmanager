@@ -22,7 +22,7 @@ const calculateAndUpdatePFI = async (freelancerId) => {
       return acc + 1;
     }
     return acc;
-  }, 0) / completedMilestones * 100 || 0;
+  }, 0) / (completedMilestones || 1) * 100;
 
   const aqaScores = milestones
     .map(m => m.submissions[0]?.aqaScore)

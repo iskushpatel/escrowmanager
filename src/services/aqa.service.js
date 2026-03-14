@@ -1,10 +1,28 @@
 import groqAgent from './groq.service.js';
-import geminiService from './gemini.service.js'; // kept as fallback
+import milestoneService from './milestone.service.js'; // kept as fallback
 import prisma from '../lib/prisma.js';
 import stripeService from './stripe.service.js';
 import pfiService from './pfi.service.js';
 
 const processSubmission = async (submissionId) => {
+   const submission = await prisma.submission.findUnique({
+    where: { id: submissionId },
+    include: { milestone: true },
+  });
+ 
+  if (!submission) throw new Error('Submission not found');
+ 
+  const alreadyPaid = await prisma.transaction.findFirst({
+    where: {
+      milestoneId: submission.milestoneId,
+      type: { in: ['MILESTONE_PAYOUT', 'PARTIAL_PAYOUT', 'REFUND_EMPLOYER'] },
+    },
+  });
+ 
+  if (alreadyPaid) {
+    console.warn(`[AQA] Duplicate blocked — milestone ${submission.milestoneId} already has transaction ${alreadyPaid.id} (${alreadyPaid.type})`);
+    return { alreadyProcessed: true, transactionId: alreadyPaid.id };
+  }
   try {
     // PRIMARY PATH — tool-calling agent handles everything:
     // score_submission → process_payment → update_reputation
