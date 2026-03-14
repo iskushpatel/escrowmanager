@@ -1,196 +1,79 @@
-import { z } from 'zod';
-import prisma from '../lib/prisma.js';
-import geminiService from '../services/gemini.service.js';
+import Groq from 'groq-sdk';
 
-const createProjectSchema = z.object({
-    title: z.string().min(5),
-    description: z.string().min(20),
-    budget: z.number().positive(),
-    deadline: z.string().datetime(),
-    freelancerEmail: z.string().email().optional(),
-});
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-const createProject = async (req, res) => {
-    try {
-        if (req.user.role !== 'EMPLOYER') return res.status(403).json({ error: 'Only employers can create projects' });
-        const projectData = createProjectSchema.parse(req.body);
+const cleanJson = (text) => {
+    return JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
+};
 
-        // 1. Get AI-generated milestones
-        const milestonesFromAI = await geminiService.decomposeProjectIntoMilestones(projectData);
-
-        // 2. Find freelancer if email was provided
-        let freelancerId = null;
-        if (projectData.freelancerEmail) {
-            const freelancer = await prisma.user.findUnique({ where: { email: projectData.freelancerEmail } });
-            if (freelancer?.role === 'FREELANCER') freelancerId = freelancer.id;
+const withRetry = async (fn, maxRetries = 3) => {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            return await fn();
+        } catch (err) {
+            const isRateLimit = err.status === 429 || err.message?.includes('rate');
+            if (isRateLimit && attempt < maxRetries) {
+                const delay = Math.pow(2, attempt) * 1000;
+                await new Promise(r => setTimeout(r, delay));
+            } else { throw err; }
         }
-
-        // 3. Process milestone data (AI returns estimatedDays, we use it for deadline calculation)
-        const milestoneData = milestonesFromAI.map((m) => ({
-            ...m,
-            submissionType: m.submissionType || 'CODE',
-            deadline: new Date(Date.now() + (m.estimatedDays || 7) * 86400000),
-            freelancerId,
-            status: freelancerId ? 'ASSIGNED' : 'PENDING',
-        }));
-
-        const { project } = await prisma.$transaction(async (tx) => {
-            // Create the Project
-            const proj = await tx.project.create({
-                data: {
-                    title: projectData.title,
-                    description: projectData.description,
-                    budget: projectData.budget,
-                    deadline: new Date(projectData.deadline),
-                    employerId: req.user.userId,
-                },
-            });
-
-            // FIX: Remove estimatedDays before sending to Prisma createMany
-            await tx.milestone.createMany({
-                data: milestoneData.map((m) => {
-                    const { estimatedDays, ...dataToSave } = m; // Pluck out the unknown field
-                    return { 
-                        ...dataToSave, 
-                        projectId: proj.id 
-                    };
-                }),
-            });
-
-            // Create Escrow
-            await tx.escrowAccount.create({
-                data: { 
-                    projectId: proj.id, 
-                    totalAmount: projectData.budget, 
-                    status: 'UNFUNDED' 
-                },
-            });
-
-            return { project: proj };
-        });
-
-        // Return everything to the Android app
-        const milestones = await prisma.milestone.findMany({ 
-            where: { projectId: project.id }, 
-            orderBy: { order: 'asc' } 
-        });
-
-        res.status(201).json({ project, milestones });
-    } catch (error) {
-        console.error("Project Creation Failed:", error);
-        res.status(500).json({ error: error.message });
     }
 };
 
-const updateProjectMilestones = async (req, res) => {
-    try {
-        const { id: projectId } = req.params;
-        const { milestones } = req.body;
+const detectProjectType = (title, description) => {
+    const text = `${title} ${description}`.toLowerCase();
+    if (text.match(/mobile|android|kotlin|flutter|ios/)) return 'mobile_app';
+    if (text.match(/design|ui|ux|figma|logo|graphics/)) return 'design';
+    if (text.match(/content|blog|article|writing/)) return 'content';
+    if (text.match(/api|backend|server|database|sql/)) return 'backend';
+    return 'fullstack';
+};
 
-        const project = await prisma.project.findUnique({ where: { id: projectId } });
-        if (!project || project.employerId !== req.user.userId) {
-            return res.status(403).json({ error: 'Unauthorized' });
+const decomposeProjectIntoMilestones = async ({ title, description, budget, deadline }) => {
+    const safeDescription = description.substring(0, 1000);
+    const projectType = detectProjectType(title, description);
+
+    const systemMessage = `You are a technical project manager. Decompose projects into 3-5 milestones. 
+    You MUST assign each milestone one of these exact submissionTypes: 'CODE', 'DESIGN', 'CONTENT', or 'DEPLOYMENT'.`;
+
+    const prompt = `Project: ${title}. Description: ${safeDescription}. Budget: $${budget}. 
+    Return ONLY JSON:
+    {
+      "milestones": [
+        {
+          "order": 1,
+          "title": "string",
+          "submissionType": "CODE", 
+          "description": "string",
+          "checklist": ["verifiable item"],
+          "amount": 100,
+          "estimatedDays": 5
         }
+      ]
+    }`;
 
-        await prisma.$transaction(async (tx) => {
-            // Delete AI suggestions and replace with employer's approved versions
-            await tx.milestone.deleteMany({ where: { projectId } });
-            
-            await tx.milestone.createMany({
-                data: milestones.map((m) => ({
-                    projectId,
-                    order: m.order,
-                    title: m.title,
-                    description: m.description,
-                    submissionType: m.submissionType,
-                    checklist: m.checklist,
-                    amount: m.amount,
-                    deadline: new Date(m.deadline),
-                    status: 'PENDING'
-                }))
-            });
-
-            // Update budget to match the new sum of milestones
-            const finalBudget = milestones.reduce((sum, m) => sum + m.amount, 0);
-            
-            await tx.project.update({ 
-                where: { id: projectId }, 
-                data: { budget: finalBudget } 
-            });
-
-            await tx.escrowAccount.update({
-                where: { projectId },
-                data: { 
-                    status: 'FUNDED', 
-                    totalAmount: finalBudget, 
-                    heldAmount: finalBudget 
-                }
-            });
-        });
-
-        res.json({ message: 'Milestones finalized and escrow funded.' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
-
-const getProjectById = async (req, res) => {
     try {
-        const { id } = req.params;
-        const project = await prisma.project.findUnique({
-            where: { id },
-            include: {
-                milestones: { 
-                    orderBy: { order: 'asc' }, 
-                    include: { submissions: { orderBy: { createdAt: 'desc' }, take: 1 } } 
-                },
-                escrowAccount: true,
-                employer: { select: { id: true, name: true, email: true } },
-            },
-        });
-        if (!project) return res.status(404).json({ error: 'Project not found' });
-        res.json(project);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
-
-const getUserProjects = async (req, res) => {
-    try {
-        const projects = await prisma.project.findMany({
-            where: {
-                OR: [
-                    { employerId: req.user.userId },
-                    { milestones: { some: { freelancerId: req.user.userId } } },
+        const result = await withRetry(() =>
+            groq.chat.completions.create({
+                model: 'llama-3.3-70b-versatile',
+                messages: [
+                    { role: 'system', content: systemMessage },
+                    { role: 'user', content: prompt }
                 ],
-            },
-            include: { employer: { select: { name: true } } },
-            orderBy: { createdAt: 'desc' },
-        });
-        res.json(projects);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+                temperature: 0.2,
+                response_format: { type: 'json_object' },
+            })
+        );
+        const parsed = cleanJson(result.choices[0].message.content);
+        return parsed.milestones;
+    } catch (err) {
+        console.error('Groq decomposition failed, using fallback.');
+        return [{
+            order: 1, title: 'Initial Phase', submissionType: 'CODE',
+            description: 'Setup and core logic.', checklist: ['Project initialized'],
+            amount: budget, estimatedDays: 7
+        }];
     }
 };
 
-const updateDeadline = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { newDeadline } = req.body;
-        const updatedProject = await prisma.project.update({
-            where: { id },
-            data: { deadline: new Date(newDeadline) },
-        });
-        res.json(updatedProject);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
-
-export default { 
-    createProject, 
-    getProjectById, 
-    getUserProjects, 
-    updateDeadline, 
-    updateProjectMilestones 
-};
+export default { decomposeProjectIntoMilestones };
