@@ -7,7 +7,6 @@ import prisma from '../lib/prisma.js';
 import stripeService from './stripe.service.js';
 import pfiService from './pfi.service.js';
 import geminiService from './gemini.service.js'; // fallback
-import evaluators from './evaluators.service.js';
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
@@ -242,50 +241,38 @@ const processSubmission = async (submissionId) => {
     .join('\n');
 
   // Conversation history — grows as the agent calls tools
-// Collect type-specific evidence BEFORE sending to agent
-const evidence = await evaluators.getEvidenceForSubmission({
-  submissionType: milestone.submissionType || 'CODE',
-  repoUrl: submission.repoUrl,
-  workDescription: submission.workDescription,
-  checklist: milestone.checklist,
-});
-
-console.log(`[Agent] Evidence collected for ${milestone.submissionType}:`, JSON.stringify(evidence).substring(0, 200));
-
   const messages = [
     {
       role: 'system',
-      content: `You are an autonomous escrow agent for a freelance platform.
-  Your job is to fairly evaluate freelancer submissions and process payments automatically.
+      content: `You are an autonomous escrow agent for a freelance platform called BitByBit.
+Your job is to fairly evaluate freelancer submissions and process payments automatically.
 
-  You MUST call tools in this exact order:
-  1. score_submission — evaluate the work against the checklist
-  2. process_payment  — trigger Stripe based on your score
-  3. update_reputation — recalculate the freelancer's PFI score
+You MUST call tools in this exact order:
+1. score_submission — evaluate the work against the checklist
+2. process_payment  — trigger Stripe based on your score
+3. update_reputation — recalculate the freelancer's PFI score
 
-  Be objective and strict. Base your score only on how many checklist items are concretely satisfied.`,
+Be objective and strict. Base your score only on how many checklist items are concretely satisfied.
+Do not be generous. Partial work = partial score.`,
     },
     {
       role: 'user',
       content: `Process this milestone submission:
 
-  MILESTONE: ${milestone.title}
-  DESCRIPTION: ${milestone.description}
-  SUBMISSION TYPE: ${milestone.submissionType}
+MILESTONE TITLE: ${milestone.title}
+MILESTONE DESCRIPTION: ${milestone.description}
 
-  ACCEPTANCE CHECKLIST:
-  ${checklistText}
+ACCEPTANCE CHECKLIST:
+${checklistText}
 
-  FREELANCER SUBMISSION:
-  ${submission.workDescription.substring(0, 500)}
+FREELANCER SUBMISSION:
+${submission.workDescription.substring(0, 800)}
+${submission.repoUrl ? `REPO: ${submission.repoUrl}` : ''}
 
-  VERIFIED EVIDENCE (from ${milestone.submissionType} evaluator):
-  ${JSON.stringify(evidence, null, 2).substring(0, 1000)}
+Milestone payout amount: $${milestone.amount}
+Freelancer ID: ${milestone.freelancerId}
 
-  Milestone payout: $${milestone.amount}
-  Freelancer ID: ${milestone.freelancerId}
-
-  Evaluate the work using both the description AND the verified evidence. Process payment and update reputation.`,
+Evaluate the work, process the payment, and update the reputation score.`,
     },
   ];
 
