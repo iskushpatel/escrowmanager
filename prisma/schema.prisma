@@ -69,7 +69,6 @@ model Milestone {
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
   submissionType  SubmissionType @default(CODE)
-  estimatedDays   Int?
 }
 
 enum MilestoneStatus {
